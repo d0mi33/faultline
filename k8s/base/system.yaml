@@ -1,0 +1,47 @@
+# Shared, long-lived pieces. Per-run sandboxes live in their own namespaces.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: faultline-system
+---
+# Stand-in for "the internet's LLM provider". Only Faultline proxies may reach it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: faultline-system
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mock-llm}}
+  template:
+    metadata: {labels: {app: mock-llm}}
+    spec:
+      containers:
+        - name: mock-llm
+          image: faultline/mock-llm:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8000}]
+          securityContext: {runAsNonRoot: true, runAsUser: 65534, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}
+          resources: {requests: {cpu: 50m, memory: 32Mi}, limits: {memory: 128Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: faultline-system
+spec:
+  selector: {app: mock-llm}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mock-llm-only-from-proxies
+  namespace: faultline-system
+spec:
+  podSelector: {matchLabels: {app: mock-llm}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {faultline/run: "true"}}
+          podSelector: {matchLabels: {app: proxy}}

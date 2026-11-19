@@ -1,0 +1,6 @@
+# Model provider silently drops the tool schema. Agent loses its tools mid-conversation.
+seed: 5
+rules:
+  - name: drop-tool-schema
+    action: drop_tools
+    path: "/v1/chat/completions"

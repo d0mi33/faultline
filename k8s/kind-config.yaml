@@ -1,0 +1,12 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: faultline
+networking:
+  # kindnet (at least through kind 0.24) does not enforce NetworkPolicy, which this whole
+  # project depends on. Use Calico instead; cluster-up.sh installs it.
+  disableDefaultCNI: true
+  podSubnet: 192.168.0.0/16
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

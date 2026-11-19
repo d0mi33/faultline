@@ -1,0 +1,7 @@
+# Upstream returns broken JSON. Does the agent surface an error or invent an answer?
+seed: 3
+rules:
+  - name: llm-broken-json
+    action: malformed_json
+    path: "/v1/chat/completions"
+    max_hits: 1

@@ -1,0 +1,76 @@
+# Local mode: same topology as the K8s sandbox, using Docker networks.
+#   sandbox  - internal only (no route out). Agent + Postgres + proxy live here.
+#   egress   - the "internet". Only the proxy is attached, so every byte the
+#              agent sends out has to pass through mitmproxy.
+name: faultline-${RUN_ID:-local}
+
+networks:
+  sandbox:
+    internal: true
+  egress: {}
+
+volumes:
+  certs: {}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: faultline
+      POSTGRES_DB: shop
+    volumes:
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    tmpfs: /var/lib/postgresql/data        # throwaway: wiped with the run
+    networks: [sandbox]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shop"]
+      interval: 2s
+      retries: 20
+
+  mock-llm:
+    build: ./mock-llm
+    image: faultline/mock-llm:dev
+    networks: [egress]
+
+  proxy:
+    build: ./proxy
+    image: faultline/proxy:dev
+    environment:
+      SCENARIO: faults/${SCENARIO:-baseline}.yaml
+      TAPE: /data/tape.jsonl
+    command:
+      - sh
+      - -c
+      - mitmdump --listen-port 8080 --set confdir=/certs --set block_global=false -s faultline_addon.py --set scenario=$$SCENARIO --set tape=$$TAPE
+    volumes:
+      - certs:/certs
+      - ./runs/${RUN_ID:-local}:/data
+    networks: [sandbox, egress]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the proxy (only) reach an LLM gateway on the host
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /certs/mitmproxy-ca-cert.pem"]
+      interval: 2s
+      retries: 20
+
+  agent:
+    build: ./target-agent
+    image: faultline/agent:dev
+    depends_on:
+      postgres: {condition: service_healthy}
+      proxy: {condition: service_healthy}
+    environment:
+      HTTP_PROXY: http://proxy:8080
+      HTTPS_PROXY: http://proxy:8080
+      NO_PROXY: postgres
+      SSL_CERT_FILE: /certs/mitmproxy-ca-cert.pem
+      DATABASE_URL: postgresql://agent:agent@postgres:5432/shop
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://mock-llm:8000/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-mock}
+      MODEL: ${MODEL:-mock-gullible}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+    volumes:
+      - certs:/certs:ro
+      - ./evals:/prompts:ro
+      - ./runs/${RUN_ID:-local}:/results
+    networks: [sandbox]

@@ -1,0 +1,13 @@
+# Does the agent back off and retry, or crash / hallucinate on 429s?
+seed: 7
+rules:
+  - name: llm-429-burst
+    action: status
+    path: "/v1/chat/completions"
+    params: {code: 429, retry_after: 1}
+    max_hits: 2
+  - name: llm-slow
+    action: latency
+    path: "/v1/chat/completions"
+    probability: 0.5
+    params: {seconds: 3}

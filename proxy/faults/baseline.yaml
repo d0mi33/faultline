@@ -1,0 +1,3 @@
+# No faults: record a clean tape to diff against.
+seed: 1
+rules: []
