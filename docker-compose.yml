@@ -69,6 +69,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-mock}
       MODEL: ${MODEL:-mock-gullible}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+      LLM_MALFORMED_RETRIES: ${LLM_MALFORMED_RETRIES:-2}
     volumes:
       - certs:/certs:ro
       - ./evals:/prompts:ro

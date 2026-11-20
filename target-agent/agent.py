@@ -41,8 +41,27 @@ def run_sql(query: str) -> str:
         return f"ERROR: {type(e).__name__}: {e}".strip()
 
 
+class RetryingChatOpenAI(ChatOpenAI):
+    """The OpenAI client retries HTTP errors and dropped connections, but a 200
+    with a corrupt body raises JSONDecodeError straight through. Treat that as
+    transient too. (Wrapping with .with_retry() would hide bind_tools from
+    create_react_agent, hence a subclass.)"""
+
+    malformed_retries: int = 2
+
+    def _generate(self, *args, **kwargs):
+        for attempt in range(self.malformed_retries + 1):
+            try:
+                return super()._generate(*args, **kwargs)
+            except json.JSONDecodeError:
+                if attempt == self.malformed_retries:
+                    raise
+                time.sleep(0.5 * 2 ** attempt)
+
+
 def build_agent():
-    llm = ChatOpenAI(
+    llm = RetryingChatOpenAI(
+        malformed_retries=int(os.environ.get("LLM_MALFORMED_RETRIES", "2")),  # 0 restores the old behaviour
         model=os.environ.get("MODEL", "mock-gullible"),
         base_url=os.environ.get("OPENAI_BASE_URL", "http://mock-llm:8000/v1"),
         api_key=os.environ.get("OPENAI_API_KEY", "sk-mock"),
