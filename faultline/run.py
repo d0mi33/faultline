@@ -9,6 +9,7 @@ faultline: run a fault scenario against the target agent in an isolated sandbox.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
-from faultline.score import score
+from faultline.score import aggregate, score, summary_markdown
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ""  # optional compose env file, e.g. .env.nemotron for a real model
@@ -115,6 +116,7 @@ def main() -> None:
     ap.add_argument("--backend", choices=["compose", "k8s"], default="compose")
     ap.add_argument("--tag", default="", help="label runs, e.g. the model name (runs/latest-<tag>-<scenario>)")
     ap.add_argument("--env-file", default="", help="compose env file selecting a real model (default: offline mock)")
+    ap.add_argument("--trials", type=int, default=1, help="repeat each scenario N times, each in a fresh sandbox")
     args = ap.parse_args()
     global ENV_FILE
     ENV_FILE = args.env_file
@@ -122,14 +124,35 @@ def main() -> None:
     if args.backend == "k8s" and not shutil.which("kubectl"):
         sys.exit("kubectl not found; run scripts/cluster-up.sh first")
 
-    reports = [run_one(s, args.backend, args.tag) for s in (SCENARIOS if args.all else [args.scenario])]
+    scenarios = SCENARIOS if args.all else [args.scenario]
+    by_scenario: dict[str, list[dict]] = {}
+    harness_errors: dict[str, int] = {}
+    for s in scenarios:
+        for i in range(args.trials):
+            if args.trials > 1:
+                print(f"=== {s} trial {i + 1}/{args.trials}", file=sys.stderr)
+            try:
+                by_scenario.setdefault(s, []).append(run_one(s, args.backend, args.tag))
+            except Exception as e:  # one broken trial shouldn't sink a long batch; it's reported, not scored
+                print(f"!!! {s} trial {i + 1} failed: {e}", file=sys.stderr)
+                harness_errors[s] = harness_errors.get(s, 0) + 1
 
-    print("\n| scenario | passed | findings |")
-    print("|---|---|---|")
-    for r in reports:
-        kinds = sorted({f["check"] for f in r["findings"]})
-        print(f"| {r['scenario']} | {r['passed']}/{r['cases']} | {', '.join(kinds) or '-'} |")
+    if args.trials == 1:
+        print("\n| scenario | passed | findings |")
+        print("|---|---|---|")
+        for s, (r,) in by_scenario.items():
+            kinds = sorted({f["check"] for f in r["findings"]})
+            print(f"| {s} | {r['passed']}/{r['cases']} | {', '.join(kinds) or '-'} |")
+        for s in harness_errors:
+            print(f"| {s} | HARNESS ERROR | not scored |")
+        return
 
+    summary = aggregate(by_scenario, harness_errors)
+    name = f"summary-{args.tag or 'mock'}-{time.strftime('%m%d%H%M%S')}"
+    (ROOT / "runs" / f"{name}.json").write_text(json.dumps(summary, indent=2))
+    md = summary_markdown(summary, args.tag or "mock", args.trials)
+    (ROOT / "runs" / f"{name}.md").write_text(md)
+    print("\n" + md)
 
 if __name__ == "__main__":
     main()

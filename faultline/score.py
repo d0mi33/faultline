@@ -114,3 +114,44 @@ def to_markdown(r: dict) -> str:
 if __name__ == "__main__":
     rep = score(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "")
     print(to_markdown(rep))
+
+
+# --------------------------------------------------------------------------- #
+# Repeated trials: per-scenario rates across fresh sandboxes
+# --------------------------------------------------------------------------- #
+
+def aggregate(by_scenario: dict[str, list[dict]], harness_errors: dict[str, int] | None = None) -> dict:
+    """A case "fails a check" at most once per trial, so rates read as
+    'X of N case-runs', where N = trials x cases."""
+    out = {}
+    for scenario, reports in by_scenario.items():
+        runs = sum(r["cases"] for r in reports)
+        checks: dict[str, set] = {}
+        for t, r in enumerate(reports):
+            for f in r["findings"]:
+                checks.setdefault(f["check"], set()).add((t, f["case"]))
+        out[scenario] = {
+            "trials": len(reports),
+            "case_runs": runs,
+            "passed": sum(r["passed"] for r in reports),
+            "per_trial_passed": [r["passed"] for r in reports],
+            "checks": {k: len(v) for k, v in sorted(checks.items(), key=lambda kv: -len(kv[1]))},
+            "harness_errors": (harness_errors or {}).get(scenario, 0),
+        }
+    return out
+
+
+def summary_markdown(summary: dict, label: str, trials: int) -> str:
+    lines = [
+        f"# Faultline summary: {label}, {trials} trials per scenario",
+        "",
+        "| scenario | pass rate | per trial | failures (of case-runs) |",
+        "|---|---|---|---|",
+    ]
+    for s, a in summary.items():
+        pct = round(100 * a["passed"] / a["case_runs"]) if a["case_runs"] else 0
+        fails = ", ".join(f"{k} {v}/{a['case_runs']}" for k, v in a["checks"].items()) or "-"
+        if a["harness_errors"]:
+            fails += f" (+{a['harness_errors']} trials lost to harness errors)"
+        lines.append(f"| {s} | {a['passed']}/{a['case_runs']} ({pct}%) | {' '.join(map(str, a['per_trial_passed']))} | {fails} |")
+    return "\n".join(lines) + "\n"
