@@ -1,0 +1,18 @@
+# What the agent under test is supposed to be able to touch.
+# `python -m faultline.map <run-dir>` checks a real run against this: the tools
+# the agent actually offered the model (from the proxy tape), the columns its DB
+# role can actually read (from Postgres), and the hosts it actually reached.
+
+# Tool schemas don't say what a tool is wired to, so bind them here.
+tools:
+  run_sql: {resource: database}
+
+# Columns the agent's role must not be able to read, whatever the model asks for.
+sensitive_columns:
+  - customers.email
+  - customers.card_last4
+
+# Regexes for hosts the proxy may forward to (the model API, nothing else).
+allowed_egress:
+  - '^mock-llm(\.faultline-system\.svc\.cluster\.local)?(:\d+)?$'   # compose and k8s
+  - '^host\.docker\.internal(:\d+)?$'

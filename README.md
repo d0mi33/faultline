@@ -107,6 +107,82 @@ but not enough for tight confidence intervals. Results are for one model, one
 agent and one injection payload. Single runs swung noticeably (prompt_injection
 went 1/4, then 0/4), which is why the rates above are from repeated trials.
 
+## Running it somewhere new
+
+The point of a harness like this is to run inside someone else's
+infrastructure, so three tools cover installing it and checking it's sound.
+
+### `faultline.doctor`: preflight that tests behaviour, not config
+
+```bash
+python3 -m faultline.doctor                          # docker host
+python3 -m faultline.doctor --env-file .env.mymodel  # + model gateway, from inside a container
+python3 -m faultline.doctor --k8s                    # + current kubectl cluster
+```
+
+Each check exercises the real behaviour. The Kubernetes check starts a pod,
+confirms another pod can reach it, applies a deny-egress NetworkPolicy, and
+confirms it can't any more. It goes pod to pod by IP, so it works on clusters
+with no internet access.
+
+| cluster | `NetworkPolicy enforced` |
+|---|---|
+| kind + Calico | **PASS**: allowed without a policy, blocked with one |
+| kind, default kindnet | **FAIL**: "deny-egress was accepted but traffic still flows: the CNI (kindnet) is ignoring NetworkPolicy" |
+
+That second row is the bug described under *Isolation*, now caught before a
+run instead of after.
+
+### `faultline.map`: attack surface from what a run actually did
+
+```bash
+python3 -m faultline.map runs/latest-baseline   # writes surface.md + surface.json, exits 1 on high findings
+```
+
+It makes no model calls. It combines:
+
+- the **tools the agent offered the model**, read from the proxy tape (so it works for any agent framework), and how often each was called
+- the **per-column privileges of the agent's DB role**, queried from Postgres at the end of every run (`grants.tsv`)
+- the **hosts the proxy forwarded to**
+
+It checks them against [policy.yaml](policy.yaml), which declares what each tool
+is wired to, which columns are sensitive, and which egress hosts are allowed:
+
+```mermaid
+flowchart LR
+  user(["customer message"]) --> agent["agent"]
+  agent -->|"4 calls"| T_run_sql["tool: run_sql"]
+  T_run_sql --> D_customers[("customers: id, name")]
+  T_run_sql -.-x X_customers["customers: email, card_last4 (denied)"]
+  T_run_sql --> D_orders[("orders: id, customer_id, item, status, placed_at")]
+  agent -->|"via proxy"| H_mock_llm_8000{{"mock-llm:8000"}}
+```
+
+Findings are mismatches between the policy and reality: a sensitive column the
+role can read, a tool the policy doesn't know about, an egress host that isn't
+allow-listed. The first Kubernetes run flagged the in-cluster model service as
+unexpected egress, because the policy only listed the Compose hostname.
+
+### `scripts/bundle.sh`: offline install
+
+```bash
+scripts/bundle.sh                       # -> dist/faultline-bundle-<sha>.tar.gz (~210 MB)
+# on the target host, with no internet:
+./install.sh                            # docker host
+./install.sh --kind faultline           # kind cluster
+./install.sh --registry registry.corp:5000   # private registry; rewrites every manifest's image refs
+```
+
+The bundle contains every image the harness runs (saved for one platform), the
+code, a manifest, and `SHA256SUMS`. The installer verifies the checksums first
+and refuses a tampered bundle. Gitignored files (`.env*`, `runs/`, keys) are
+never packed. It deliberately ships no CNI: on a customer's cluster, use theirs
+and let `doctor --k8s` prove it enforces policy.
+
+Verified: built a bundle, installed it into the kind cluster and into a
+throwaway local registry, then ran `prompt_injection` on Kubernetes from the
+unpacked bundle.
+
 ## Quick start
 
 ```bash
@@ -159,9 +235,10 @@ target-agent/   LangGraph agent under test
 mock-llm/       deterministic OpenAI-compatible stub (stdlib only)
 db/             per-run seed data and least-privilege role
 k8s/            kind config, shared system ns, per-run sandbox template
-faultline/       runner (compose | k8s) and scorer
+faultline/      runner (compose | k8s), scorer, map, doctor
+policy.yaml     what the agent should reach; checked by faultline.map
 evals/          prompts, promptfoo, LangSmith
-scripts/        cluster bring-up, isolation verification
+scripts/        cluster bring-up, isolation verification, offline bundle
 ```
 
 ## Status and next steps
@@ -191,3 +268,4 @@ Not yet done:
 - Coverage-guided fuzzing: mutate injection payloads and keep the ones that change the agent's tool-call sequence
 - MCP / JSON-RPC tool traffic, plus Anthropic-native response faults
 - Self-hosted control plane (Coolify) that queues runs and shows tapes side by side
+- A Helm chart for the shared system namespace, and `doctor` checks for corporate proxies and custom CAs

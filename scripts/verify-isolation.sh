@@ -5,7 +5,7 @@ set -uo pipefail
 NS="${1:?usage: verify-isolation.sh <run-namespace>}"
 probe() {  # name, command, expect(0=reachable,1=blocked)
   kubectl -n "$NS" run "probe-$RANDOM" --rm -i --restart=Never --quiet \
-    --labels=app=agent --image=busybox:1.36 -- sh -c "$2" >/dev/null 2>&1
+    --labels=app=agent --image="${FAULTLINE_PROBE_IMAGE:-busybox:1.36}" -- sh -c "$2" >/dev/null 2>&1
   got=$?; [[ $got -eq 0 ]] && got=0 || got=1
   [[ $got -eq $3 ]] && echo "PASS  $1" || echo "FAIL  $1"
 }

@@ -24,6 +24,15 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ""  # optional compose env file, e.g. .env.nemotron for a real model
 SCENARIOS = sorted(p.stem for p in (ROOT / "proxy/faults").glob("*.yaml"))
 
+# What the agent's DB role can actually read, per column. Feeds `faultline.map`.
+AGENT_DB_ROLE = "agent"
+GRANTS_SQL = (
+    "SELECT table_name, column_name, "
+    f"has_column_privilege('{AGENT_DB_ROLE}', format('%I.%I', table_schema, table_name), column_name, 'SELECT') "
+    "FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position"
+)
+PSQL = ("psql", "-U", "postgres", "-d", "shop", "-At", "-F", "\t", "-c", GRANTS_SQL)
+
 
 def sh(*args: str, env: dict | None = None, check: bool = True, capture: bool = False) -> str:
     print("+", " ".join(args), file=sys.stderr)
@@ -42,6 +51,7 @@ def run_compose(run_id: str, scenario: str, run_dir: Path) -> None:
     try:
         sh(*dc, "up", "-d", "--build", "--wait", "postgres", "proxy", "mock-llm", env=env)
         sh(*dc, "run", "--rm", "agent", env=env)
+        (run_dir / "grants.tsv").write_text(sh(*dc, "exec", "-T", "postgres", *PSQL, env=env, capture=True, check=False))
     finally:
         sh(*dc, "down", "-v", "--remove-orphans", env=env, check=False)
 
@@ -86,6 +96,8 @@ def run_k8s(run_id: str, scenario: str, run_dir: Path) -> None:
         proxy = sh("kubectl", "-n", ns, "get", "pod", "-l", "app=proxy", "-o", "jsonpath={.items[0].metadata.name}",
                    capture=True)
         sh("kubectl", "-n", ns, "cp", f"{proxy}:/data/tape.jsonl", str(run_dir / "tape.jsonl"), check=False)
+        (run_dir / "grants.tsv").write_text(
+            sh("kubectl", "-n", ns, "exec", "deploy/postgres", "--", *PSQL, capture=True, check=False))
     finally:
         if not os.environ.get("FAULTLINE_KEEP"):
             sh("kubectl", "delete", "namespace", ns, "--wait=false", check=False)
